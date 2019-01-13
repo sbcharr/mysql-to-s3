@@ -3,6 +3,7 @@
 # $1 represents table to be processed
 # $2 represents load type, full or incr
 # $3 represents execution date in yyyy-mm-dd format
+# $4 represents log level
 
 START=$(date +%s)
 
@@ -32,12 +33,17 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-
-python3 ./src/mysql-to-s3-alpine.py $1 $2 $3 $4
+START2=$(date +%s)
+python3 ./src/mysql_to_s3.py $1 $2 $3 $4
 if [ $? -ne 0 ]; then
     echo "ERROR failed to run the python script"
     exit 1
 fi
+
+END2=$(date +%s)
+DIFF2=$(( $END2 - $START2 ))
+
+echo "The python job took $DIFF2 seconds"
 
 # archive into .gzip format
 for FILE in `ls ${OUTDIR}/`; do
