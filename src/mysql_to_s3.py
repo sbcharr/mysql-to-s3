@@ -19,8 +19,8 @@ LOAD_TYPE = sys.argv[2]   # full or incr
 DATE_PREFIX = sys.argv[3]   # execution date
 CONFIG_S3_BUCKET = sys.argv[4]  # s3 bucket where program config is stored
 PARTITION_KEY = sys.argv[5]  # partion key to be used in S3 (only applicable for incr load type, else 'None')
-AWS_ACCESS_KEY_ID="AKIAIEEGIT5KYEQRYX7Q"
-AWS_SECRET_ACCESS_KEY="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"
+AWS_ACCESS_KEY_ID=""
+AWS_SECRET_ACCESS_KEY=""
 
 
 config = {} # dictionary to hold db connection parameters
