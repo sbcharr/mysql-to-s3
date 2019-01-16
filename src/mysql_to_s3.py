@@ -10,29 +10,32 @@ import os
 import shutil
 import gzip
 import boto3
-from boto3 import Session
-import botocore
 import threading
+import time
 
+# constants
+DB_TABLE = sys.argv[1]  # source table name
+LOAD_TYPE = sys.argv[2]   # full or incr
+DATE_PREFIX = sys.argv[3]   # execution date
+CONFIG_S3_BUCKET = sys.argv[4]  # s3 bucket where program config is stored
+PARTITION_KEY = sys.argv[5]  # partion key to be used in S3 (only applicable for incr load type, else 'None')
+AWS_ACCESS_KEY_ID="AKIAIEEGIT5KYEQRYX7Q"
+AWS_SECRET_ACCESS_KEY="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"
 
-DB_TABLE = sys.argv[1]
-LOAD_TYPE = sys.argv[2]   
-DATE_PREFIX = sys.argv[3]
-
-aws_access_key_id=""
-aws_secret_access_key=""
 
 config = {} # dictionary to hold db connection parameters
-BUCKET = "data-load-squeakysimple"
 
+
+# class uploadFileS3 abstracts multithreded model to upload files to S3 
 class uploadFileS3(threading.Thread):
-    def __init__(self, out_dir, file):
+    def __init__(self, out_dir, s3_dest, file):
         threading.Thread.__init__(self)
         self.out_dir = out_dir
         self.file = file
+        self.s3_dest = s3_dest
 
     def run(self):
-        process_file_s3(self.out_dir, self.file)
+        process_file_s3(self.out_dir, self.s3_dest, self.file)
 
 
 def set_logger(log_level='ERROR'):
@@ -40,7 +43,7 @@ def set_logger(log_level='ERROR'):
     Module level logger
     """
 
-    assert (log_level in ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']), ("invalid log level")  # input validation, sys.argv[4]
+    assert (log_level in ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']), ("invalid log level") 
     global logger
 
     logger = logging.getLogger(__name__)
@@ -56,7 +59,7 @@ def set_logger(log_level='ERROR'):
 
 def set_config(file):
     """
-    takes a file and load db credentials into the db_objects dict
+    takes a config file and loads data into config dictionary
     """
 
     try:
@@ -65,116 +68,115 @@ def set_config(file):
                 name, val = line.partition("=")[::2]
                 config[name.strip()] = str(val).strip()
     except FileNotFoundError as err:
-        logging.error(f"unable to load config file {file}: {str(err)}")
+        print(f"unable to load program config file {file}: {str(err)}")
         sys.exit(1)
+   
 
-def create_session_s3(aws_access_key_id, aws_secret_access_key): 
-    return Session(aws_access_key_id, aws_secret_access_key)
+def create_resource_s3(aws_access_key_id, aws_secret_access_key):
+    """
+    returns an S3 resource
+    """
+    return boto3.resource("s3", aws_access_key_id=aws_access_key_id, aws_secret_access_key=aws_secret_access_key)
 
 
-def create_client_s3(aws_access_key_id, aws_secret_access_key): 
-    return boto3.client("s3", aws_access_key_id, aws_secret_access_key)   
-
-
-def load_config_from_s3(s3_bucket_name, key):
+def load_config_from_s3(config_s3_bucket, key):
     """
     downloads the config file from S3 and loads its contents into config dict
     """
-    
-    session = create_session_s3(aws_access_key_id, aws_secret_access_key)
-    s3 = session.resource("s3")
+
+    s3_resource = create_resource_s3(AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
     
     try:
-        s3.Bucket(s3_bucket_name).download_file(key, os.path.basename(key))
-        logger.info(f"successfully downloaded config file from s3 bucket {s3_bucket_name}")
-    except botocore.exceptions.ClientError as err:
-        if err.response["Error"]["Code"] == "404":
-            logger.error(f"the object doesn't exist in s3 bucket {s3_bucket_name}")
-        else:
-            raise
+        s3_resource.Bucket(config_s3_bucket).download_file(key, os.path.basename(key))
+    except Exception as err:
+        print(f"unable to download file from {config_s3_bucket} : {str(err)}")
         sys.exit(1)
 
     set_config(key)
 
+
 def file_destination():
+    """
+    destination file path, 
+    returns ouput directory as well s3 destination folder
+    """
+
     if LOAD_TYPE == "full":
         out_dir = f"out/{DB_TABLE}"
-        s3_dest = f"s3://data-load-squeakysimple/{DB_TABLE}/"
+        s3_dest_folder = f"{DB_TABLE}/"
     else:
-        run_date_split = DATE_PREFIX.split('-') 
-        year, month, day = run_date_split[0], run_date_split[1], run_date_split[2]
-        out_dir = f"out/{DB_TABLE}/{year}/{month}/{day}"
-        s3_dest = f"s3://data-load-squeakysimple/{DB_TABLE}/{year}/{month}/{day}/"
+        out_dir = f"out/{DB_TABLE}/{DATE_PREFIX}"
+        s3_dest_folder = f"{DB_TABLE}/{PARTITION_KEY}={DATE_PREFIX}/" 
 
-    return out_dir, s3_dest
+    return out_dir, s3_dest_folder
 
-def prepare_outdir() -> str:
-    out_dir, _ = file_destination()
+
+def prepare_outdir():
+    """
+    prepares the directory structure on disk,
+    returns output directory as well as the s3 destination folder
+    """
+
+    out_dir, s3_dest_folder = file_destination()
     if os.path.exists(out_dir):
         shutil.rmtree(out_dir)
     
     os.makedirs(out_dir)
 
-    return out_dir
+    return out_dir, s3_dest_folder
+
 
 def gz_compress_csv(file_name):
+    """
+    compresses file to gzip format and saves to disk
+    """
+
     with open(file_name, "rb") as csv_in:
         with gzip.open(f"{file_name}.gz", "wb") as gz_out:
             shutil.copyfileobj(csv_in, gz_out)
     
 
 def upload_file_to_s3(local_path, s3_key):
-    #client = create_client_s3(aws_access_key_id, aws_secret_access_key)
-    #s3 = client.resource("s3")
-    client = boto3.client("s3", aws_access_key_id="",
-            aws_secret_access_key="")
-    
+    s3_resource = create_resource_s3(AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
+    s3_bucket = config["data_bucket_s3"]
     try:
-        client.upload_file(local_path, BUCKET, s3_key)
+        s3_resource.meta.client.upload_file(local_path, s3_bucket, s3_key)
     except Exception as err:
-        logger.error(f"failed to upload file {local_path} to S3 bucket {BUCKET}, with error {str(err)}")
+        logger.error(f"failed to upload file {local_path} to S3 bucket {s3_bucket}, with error {str(err)}")
         sys.exit(1)
 
-def process_file_s3(out_dir, file):
+
+def process_file_s3(out_dir, s3_dest, file):
     file_name = f"{out_dir}/{file}"
     gz_compress_csv(file_name)
-    os.remove(file_name)
-    s3_key = f"{DB_TABLE}/" + file + ".gz"
+    os.remove(file_name)    # removes the original .csv file after .gz version is created. This is to save disk space on container.
+    s3_key = f"{s3_dest}" + file + ".gz"
     upload_file_to_s3(file_name + ".gz", s3_key)
 
 
-
-def main() -> Exception:
+def main():
     """ 
-    retrives records from mysql db and writes to csv files, 
-    each file contains max 100,000 records and returns any exception
+    retrives records from mysql db and writes to csv files, retuns nothing
     """
-    # file_path = "./params/params.ini"
-    # load_db_credentials(file_path)
-    load_config_from_s3("sb-mysql-to-s3", "params.ini")
-    logger.debug("successfully loaded the config")
-    out_dir = prepare_outdir()
+    
+    out_dir, s3_dest_folder = prepare_outdir()
     logger.debug("prepared out dir")
 
-    
     try:
         db = mysql.connect(host=config["host"], port=int(config["port"]), user=config["user"], password=config["password"], db=config["database"], connect_timeout=int(config["timeout_seconds"]))
-    except mysql.DatabaseError as err:
+    except Exception as err:
         logger.error(f"unable to connect to database: {str(err)}")
-        return err
+        sys.exit(1)
         
     try:
         cursor = db.cursor()
         
-        cursor.execute(sql.sql_statements["sql_db_bakery_" + DB_TABLE])
+        cursor.execute(sql.sql_statements[f"sql_db_bakery_{DB_TABLE}"])
         logger.info(f"total rows processed = {cursor.rowcount}")
         
         # get column headers
         col_names = [column[0] for column in cursor.description]
-        
         file_num = 0
-        #date_split = DATE_PREFIX.strip().split("-")
-        #ds_year, ds_month, ds_day = date_split[0], date_split[1], date_split[2]
 
         while True:     # loop until all records are written to csv file
             rows = cursor.fetchmany(size=int(config["max_records_per_fetch"]))
@@ -195,7 +197,8 @@ def main() -> Exception:
             file_num += 1
     except Exception as err:
         logger.error(f"program exception: {str(err)}")
-        return err
+        db.close()
+        sys.exit(1)
     finally:
         db.close()
 
@@ -204,39 +207,20 @@ def main() -> Exception:
         files.append(file)
 
     for f in files:
-        thread = uploadFileS3(out_dir, f)
-        #thread = uploadFileS3(file_name + ".gz", s3_key)
+        thread = uploadFileS3(out_dir, s3_dest_folder, f)
         thread.start()
 
-    # for file in os.listdir(out_dir):       
-    #     file_name = f"{out_dir}/{file}"
-    #     gz_compress_csv(file_name)
-    #     os.remove(file_name)
-    #     s3_key = "cakes/" + file + ".gz"
-    #  #   print(file_name, BUCKET, s3_key)
-    #     #logger.debug("starting thread")
-
-    #     # upload_file_to_s3(file_name + ".gz", s3_key)
-    #     thread = uploadFileS3(file_name + ".gz", s3_key)
-    #     thread.start()
-    #    thread.getName()
-    #    thread.join()
-    print(threading.active_count())
-    # print(threading.currentThread())
     while threading.active_count() > 1:
-       continue
+        time.sleep(.100)
+        continue
 
-    # if os.path.exists(out_dir):
-    #     shutil.rmtree(out_dir)
-
-    return None
+    return
     
 
 if __name__ == "__main__":
-#   log_file = f"./log/{date.today()}_mysql-to-s3.log"
-    set_logger(sys.argv[4])
-    err = main()
-    if err is not None:
-        logger.error(f"exiting from main with error: {str(err)}")
-        sys.exit(1)
+    load_config_from_s3(CONFIG_S3_BUCKET, "params.ini")
+    set_logger(config["log_level"])
+
+    # starts main()
+    main()
 

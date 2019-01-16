@@ -14,9 +14,6 @@ COPY . /usr/app
 RUN chmod +x /usr/app/mysql-to-s3-command.sh
 WORKDIR /usr/app
 RUN pip3 install --no-cache-dir -r requirements.txt
-RUN aws configure set aws_access_key_id AKIAJSK3RPORJFDODBIQ --profile squeakysimple
-RUN aws configure set aws_secret_access_key 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 --profile squeakysimple
-RUN aws configure set region us-east-2 --profile squeakysimple
 ENV table none
 ENV load_type full
 ENV date 2018-12-12
