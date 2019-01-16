@@ -12,15 +12,17 @@ import gzip
 import boto3
 import threading
 import time
+import platform
 
+print("python version: ", platform.python_version())
 # constants
 DB_TABLE = sys.argv[1]  # source table name
 LOAD_TYPE = sys.argv[2]   # full or incr
 DATE_PREFIX = sys.argv[3]   # execution date
 CONFIG_S3_BUCKET = sys.argv[4]  # s3 bucket where program config is stored
 PARTITION_KEY = sys.argv[5]  # partion key to be used in S3 (only applicable for incr load type, else 'None')
-AWS_ACCESS_KEY_ID=""
-AWS_SECRET_ACCESS_KEY=""
+AWS_ACCESS_KEY_ID=sys.argv[6]
+AWS_SECRET_ACCESS_KEY=sys.argv[7]
 
 
 config = {} # dictionary to hold db connection parameters
@@ -137,6 +139,10 @@ def gz_compress_csv(file_name):
     
 
 def upload_file_to_s3(local_path, s3_key):
+    """
+    uploads data files to s3,
+    returns nothing
+    """
     s3_resource = create_resource_s3(AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
     s3_bucket = config["data_bucket_s3"]
     try:
@@ -147,6 +153,10 @@ def upload_file_to_s3(local_path, s3_key):
 
 
 def process_file_s3(out_dir, s3_dest, file):
+    """
+    prepares and uploads data files to s3,
+    returns nothing
+    """
     file_name = f"{out_dir}/{file}"
     gz_compress_csv(file_name)
     os.remove(file_name)    # removes the original .csv file after .gz version is created. This is to save disk space on container.
