@@ -12,9 +12,8 @@ import gzip
 import boto3
 import threading
 import time
-import platform
 
-print("python version: ", platform.python_version())
+
 # constants
 DB_TABLE = sys.argv[1]  # source table name
 LOAD_TYPE = sys.argv[2]   # full or incr
